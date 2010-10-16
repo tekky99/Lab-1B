@@ -82,7 +82,7 @@ command_exec(command_t *cmd, int *pass_pipefd)
 		*pass_pipefd = pipefd[0];
 	}
 	
-	if (cmd->argv && (!strcmp(cmd->argv[0],"cd") || !strcmp(cmd->argv[0],"exit"))){
+	if (cmd->argv[0] && (!strcmp(cmd->argv[0],"cd") || !strcmp(cmd->argv[0],"exit"))){
 		if (!strcmp(cmd->argv[0],"exit"))
 			_exit(0);
 		else
@@ -134,7 +134,7 @@ command_exec(command_t *cmd, int *pass_pipefd)
 				return -1;
 			}
 		}
-		if (!cmd->argv)
+		if (!(cmd->argv[0]) && !(cmd->subshell))
 			_exit(0);
 			
 		if (execvp(cmd->argv[0], cmd->argv) < 0){
@@ -243,13 +243,38 @@ command_line_exec(command_t *cmdlist)
 		pid_t pid = command_exec(cmdlist, &pipefd);
 		if (pid < 0)
 			abortClean();
-		if (pid != 0 && (waitpid(pid, &wp_status, 0) < 0)){
-			fprintf(stderr,"WAIT WRONG!\n");
-			abortClean();
-		}
-		if (pid != 0 && (!WIFEXITED(wp_status) || WEXITSTATUS(wp_status) != 0)) {
-			fprintf(stderr,"CHILD WRONG!\n");
-			abortClean();
+		if (pid != 0){
+			switch(cmdlist->controlop){
+				case CMD_END:
+				case CMD_SEMICOLON:
+					if (waitpid(pid, &wp_status, 0) < 0){
+						fprintf(stderr,"WAIT WRONG!\n");
+						return -1;
+					}
+					cmd_status = WEXITSTATUS(wp_status);
+					break;
+				case CMD_AND:
+					if (waitpid(pid, &wp_status, 0) < 0){
+						fprintf(stderr,"WAIT WRONG!\n");
+						return -1;
+					}
+					if (!WIFEXITED(wp_status) || WEXITSTATUS(wp_status) != 0) {
+						return WEXITSTATUS(wp_status);
+					}
+					
+					break;
+				case CMD_OR:
+					if (waitpid(pid, &wp_status, 0) < 0){
+						fprintf(stderr,"WAIT WRONG!\n");
+						return -1;
+					}
+					if (!WIFEXITED(wp_status) || WEXITSTATUS(wp_status) == 0) {
+						return WEXITSTATUS(wp_status);
+					}
+					break;
+				default:
+					cmd_status = 0;
+			}
 		}
 		// EXERCISE: Fill out this function!
 		// If an error occurs in command_exec, feel free to abort().
