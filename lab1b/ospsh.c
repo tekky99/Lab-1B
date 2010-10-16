@@ -82,12 +82,10 @@ command_exec(command_t *cmd, int *pass_pipefd)
 		*pass_pipefd = pipefd[0];
 	}
 	
-	if (cmd->argv[0] && (!strcmp(cmd->argv[0],"cd") || !strcmp(cmd->argv[0],"exit"))){
-		if (!strcmp(cmd->argv[0],"exit"))
-			_exit(0);
-		else
-			chdir(cmd->argv[1]);
-		return 0;
+	if (cmd->argv[0] && !strcmp(cmd->argv[0],"exit")){
+		if (cmd->argv[1] && strcmp(cmd->argv[1],"0"))
+			_exit(atoi(cmd->argv[1]));
+		_exit(0);
 	}
 	
 	pid = fork();
@@ -136,6 +134,19 @@ command_exec(command_t *cmd, int *pass_pipefd)
 		}
 		if (!(cmd->argv[0]) && !(cmd->subshell))
 			_exit(0);
+		
+		if (!strcmp(cmd->argv[0],"cd")){
+			char *path;
+			if (cmd->argv[1])
+				path = cmd->argv[1];
+			else
+				path = "~";
+			
+			if (chdir(path)<0){
+				_exit(1);
+			}
+			_exit(0);
+		}
 			
 		if (execvp(cmd->argv[0], cmd->argv) < 0){
 			fprintf(stderr,"PROGRAM WRONG!\n");
@@ -143,6 +154,20 @@ command_exec(command_t *cmd, int *pass_pipefd)
 		}
 	}
 	
+	if (!(cmd->argv[0]) && !(cmd->subshell))
+			_exit(0);
+		
+		if (!strcmp(cmd->argv[0],"cd")){
+			char *path;
+			if (cmd->argv[1])
+				path = cmd->argv[1];
+			else
+				path = "~";
+			
+			if (chdir(path)<0){
+				fprintf(stderr, "Invalid File Path\n");
+			}
+		}
 	//fprintf(stderr,"Child is done\n");
 	// Fork the child and execute the command in that child.
 	// You will handle all redirections by manipulating file descriptors.
