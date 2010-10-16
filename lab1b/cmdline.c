@@ -418,9 +418,8 @@ command_parse(parsestate_t *parsestate)
     // NULL-terminate the argv list
     cmd->argv[i] = 0;
 
-    // Error if there are no normal tokens and no subshell
-    // or if we have both normal tokens and a subshell
-    if ((i != 0) ^ (!cmd->subshell)) {
+    // Error if we have both normal tokens and a subshell
+    if ((i != 0) && (cmd->subshell)) {
         /* Invalid command */
         command_free(cmd);
         return NULL;
