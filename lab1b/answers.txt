@@ -11,16 +11,19 @@
 # information you'd like us to know, please add it at the end of the file.
 
 # Partner 1
-Name: 
-Student ID: 
-Email: 
+Name: Roman Chang
+Student ID: 303567574
+Email: changr@ucla.edu
 
 # Partner 2 (if you're working in a team)
-Name: 
-Student ID: 
-Email: 
+Name: Aniket Das
+Student ID: 803532544
+Email: aniket.das89@gmail.com
 
 # Extra credit problems
-#Extra credit problem: none
+#Extra credit problem: Advanced Token Parsing
+#                      Backslash Handling
 
 # Add any other information you'd like us to know below this line.
+
+This class is fun.
