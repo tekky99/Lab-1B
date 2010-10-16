@@ -18,6 +18,7 @@ int bgq_push(bg_queue_t *bgq, pid_t pid)
     if (bgq->last)
     {
         bgq->last->next = node;
+        bgq->last = node;
     }
     else
     {

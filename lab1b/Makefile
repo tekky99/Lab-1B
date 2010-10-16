@@ -8,9 +8,9 @@ V = @
 
 all: ospsh
 
-ospsh: cmdline.o ospsh.o main-b.o
+ospsh: cmdline.o ospsh.o main-b.o bgproc.o
 	@echo + link $@
-	$(V)$(CC) $(CFLAGS) -lpthread -o $@ cmdline.o ospsh.o main-b.o
+	$(V)$(CC) $(CFLAGS) -lpthread -o $@ cmdline.o ospsh.o bgproc.o main-b.o
 
 ospsh.o: ospsh.c cmdline.h ospsh.h
 	@echo + cc ospsh.c
@@ -27,6 +27,10 @@ main-a.o: main-a.c cmdline.h
 main-b.o: main-b.c cmdline.h ospsh.h
 	@echo + cc main-b.c
 	$(V)$(CC) $(CFLAGS) -c main-b.c
+    
+bgproc.o: bgproc.c bgproc.h
+    @echo + cc bgproc.c
+	$(V)$(CC) $(CFLAGS) -c bgproc.c
 
 cmdline: cmdline.o main-a.o
 	@echo + link cmdline
