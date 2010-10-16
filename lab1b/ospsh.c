@@ -74,9 +74,59 @@ command_exec(command_t *cmd, int *pass_pipefd)
 	// Return -1 if the pipe fails.
 	if (cmd->controlop == CMD_PIPE) {
 		/* Your code here. */
+		if (pipe(pipefd) < 0)
+			return -1;
+		*pass_pipefd = pipefd[0];
 	}
-
-
+	
+	pid = fork();
+	int fd;
+	
+	if (pid < 0){
+		fprintf(stderr,"FORK WRONG!\n");
+		return -1;
+	} else if (pid == 0){
+		if (cmd->redirect_filename[0]){
+			fd = open(cmd->redirect_filename[0], O_RDONLY);
+			if (fd < 0){
+				fprintf(stderr,"OPEN WRONG!\n");
+				abort();
+			}
+			dup2(fd,0);
+			close(fd);
+		}
+		if (cmd->redirect_filename[1]){
+			fd = open(cmd->redirect_filename[1], O_WRONLY|O_CREAT);
+			if (fd < 0){
+				fprintf(stderr,"OPEN WRONG!\n");
+				abort();
+			}
+			dup2(fd,1);
+			close(fd);
+		}
+		if (cmd->redirect_filename[2]){
+			fd = open(cmd->redirect_filename[2], O_WRONLY|O_CREAT);
+			if (fd < 0){
+				fprintf(stderr,"OPEN WRONG!\n");
+				abort();
+			}
+			dup2(fd,2);
+			close(fd);
+		}
+		if (execvp(cmd->argv[0], cmd->argv) < 0)
+			fprintf(stderr,"PROGRAM WRONG!\n");
+			abort();
+	}
+	int status;
+	if (waitpid(pid, &status, 0) < 0){
+		fprintf(stderr,"WAIT WRONG!\n");
+		return -1;
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		fprintf(stderr,"CHILD WRONG!\n");
+		return -1;
+	}
+	fprintf(stderr,"Child is done\n");
 	// Fork the child and execute the command in that child.
 	// You will handle all redirections by manipulating file descriptors.
 	//
@@ -173,7 +223,9 @@ command_line_exec(command_t *cmdlist)
 				    // Read the manual page for waitpid() to
 				    // see how to get the command's exit
 				    // status (cmd_status) from this value.
-
+		pid_t pid = command_exec(cmdlist, &pipefd);
+		if (pid < 0)
+			abort();
 		// EXERCISE: Fill out this function!
 		// If an error occurs in command_exec, feel free to abort().
 		
