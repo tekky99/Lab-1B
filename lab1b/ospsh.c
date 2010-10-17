@@ -132,9 +132,120 @@ command_exec(command_t *cmd, int *pass_pipefd)
 	// Return -1 if the pipe fails.
 	if (cmd->controlop == CMD_PIPE) {
 		/* Your code here. */
+		if (pipe(pipefd) < 0)
+			return -1;
+		
 	}
+	
+	if (cmd->argv[0] && !strcmp(cmd->argv[0],"exit")){
+		if (cmd->argv[1] && strcmp(cmd->argv[1],"0"))
+			exit(atoi(cmd->argv[1]));
+		exit(0);
+	}
+	
+	pid = fork();
+	int fd;
+	
+	if (pid < 0){
+		fprintf(stderr,"FORK WRONG!\n");
+		return -1;
+	} else if (pid == 0){
+	
+	
+		if (*pass_pipefd != STDIN_FILENO) {
+				dup2(*pass_pipefd,STDIN_FILENO);
+				close(*pass_pipefd);
+			}
+			
+		if (cmd->controlop == CMD_PIPE) {
+			if (pipefd[1] != STDOUT_FILENO) {
+				dup2(pipefd[1],STDOUT_FILENO);
+				close(pipefd[1]);
+			}
+			close(pipefd[0]);
+		}
 
-
+		// Check for Redirection and set it up
+		if (cmd->redirect_filename[0]){
+			fd = open(cmd->redirect_filename[0], O_RDONLY);
+			if (fd < 0){
+				fprintf(stderr,"OPEN WRONG!\n");
+				abortClean();
+			}
+			dup2(fd,STDIN_FILENO);
+			close(fd);
+		}
+		if (cmd->redirect_filename[1]){
+			fd = open(cmd->redirect_filename[1], O_WRONLY|O_CREAT, 0666);
+			if (fd < 0){
+				fprintf(stderr,"OPEN WRONG!\n");
+				abortClean();
+			}
+			dup2(fd,STDOUT_FILENO);
+			close(fd);
+		}
+		if (cmd->redirect_filename[2]){
+			fd = open(cmd->redirect_filename[2], O_WRONLY|O_CREAT, 0666);
+			if (fd < 0){
+				fprintf(stderr,"OPEN WRONG!\n");
+				abortClean();
+			}
+			dup2(fd,STDERR_FILENO);
+			close(fd);
+		}
+		
+		// Parenthesis special case
+		if (cmd->subshell){
+			exit(command_line_exec(cmd->subshell));
+		}
+		if (!(cmd->argv[0]) && !(cmd->subshell))
+			exit(0);
+		
+		if (!strcmp(cmd->argv[0],"cd")){
+			char *path;
+			if (cmd->argv[1])
+				path = cmd->argv[1];
+			else
+				path = getenv("HOME");
+			
+			if (chdir(path)<0){
+				exit(1);
+			}
+			exit(0);
+		}
+			
+		if (execvp(cmd->argv[0], cmd->argv) < 0){
+			fprintf(stderr,"PROGRAM WRONG!\n");
+			abortClean();
+		}
+	}
+	
+	
+	if (cmd->controlop == CMD_PIPE) {
+		//*pass_pipefd = pipefd[0];  //pass read end of pipe to parent
+		dup2(pipefd[0], *pass_pipefd);
+		if (pipefd[0] != STDIN_FILENO) {
+			close(pipefd[0]);
+		}
+		close(pipefd[1]);
+	}
+	else {
+		dup2 (STDIN_FILENO, *pass_pipefd);
+	}
+		
+	if (cmd->argv[0] && !strcmp(cmd->argv[0],"cd")){
+		char *path;
+		if (cmd->argv[1])
+			path = cmd->argv[1];
+		else
+			path = getenv("HOME");
+		
+		if (chdir(path)<0){
+			fprintf(stderr, "Invalid File Path\n");
+		}
+	}
+	//fprintf(stderr,"Child is done\n");
+    
 	// Fork the child and execute the command in that child.
 	// You will handle all redirections by manipulating file descriptors.
 	//
@@ -228,11 +339,50 @@ command_line_exec(command_t *cmdlist)
 	int pipefd = STDIN_FILENO;  // read end of last pipe
 	
 	while (cmdlist) {
-		int wp_status;	    // Hint: use for waitpid's status argument!
-				    // Read the manual page for waitpid() to
-				    // see how to get the command's exit
-				    // status (cmd_status) from this value.
-
+		int wp_status;      // Hint: use for waitpid's status argument!
+                            // Read the manual page for waitpid() to
+                            // see how to get the command's exit
+                            // status (cmd_status) from this value.
+		pid_t pid = command_exec(cmdlist, &pipefd);
+		
+		if (pid < 0)
+			abortClean();
+		if (pid != 0){
+			switch(cmdlist->controlop){
+				case CMD_END:
+				case CMD_SEMICOLON:
+					if (waitpid(pid, &wp_status, 0) < 0){
+						fprintf(stderr,"WAIT WRONG!\n");
+						return -1;
+					}
+					if (WIFEXITED(wp_status))
+						cmd_status = WEXITSTATUS(wp_status);
+					break;
+				case CMD_AND:
+					if (waitpid(pid, &wp_status, 0) < 0){
+						fprintf(stderr,"WAIT WRONG!\n");
+						return -1;
+					}
+					if (!WIFEXITED(wp_status) || WEXITSTATUS(wp_status) != 0) {
+						cmd_status = WEXITSTATUS(wp_status);
+						goto done;
+					}
+					
+					break;
+				case CMD_OR:
+					if (waitpid(pid, &wp_status, 0) < 0){
+						fprintf(stderr,"WAIT WRONG!\n");
+						return -1;
+					}
+					if (!WIFEXITED(wp_status) || WEXITSTATUS(wp_status) == 0) {
+						cmd_status = WEXITSTATUS(wp_status);
+						goto done;
+					}
+					break;
+				default:
+					cmd_status = 0;
+			}
+		}
 		// EXERCISE: Fill out this function!
 		// If an error occurs in command_exec, feel free to abort().
 		
