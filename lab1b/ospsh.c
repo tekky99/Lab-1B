@@ -84,8 +84,8 @@ command_exec(command_t *cmd, int *pass_pipefd)
 	
 	if (cmd->argv[0] && !strcmp(cmd->argv[0],"exit")){
 		if (cmd->argv[1] && strcmp(cmd->argv[1],"0"))
-			_exit(atoi(cmd->argv[1]));
-		_exit(0);
+			exit(atoi(cmd->argv[1]));
+		exit(0);
 	}
 	
 	pid = fork();
@@ -143,9 +143,9 @@ command_exec(command_t *cmd, int *pass_pipefd)
 				path = "~";
 			
 			if (chdir(path)<0){
-				_exit(1);
+				exit(1);
 			}
-			_exit(0);
+			exit(0);
 		}
 			
 		if (execvp(cmd->argv[0], cmd->argv) < 0){
@@ -155,7 +155,7 @@ command_exec(command_t *cmd, int *pass_pipefd)
 	}
 	
 	if (!(cmd->argv[0]) && !(cmd->subshell))
-			_exit(0);
+			exit(0);
 		
 		if (!strcmp(cmd->argv[0],"cd")){
 			char *path;
@@ -266,6 +266,7 @@ command_line_exec(command_t *cmdlist)
 				    // see how to get the command's exit
 				    // status (cmd_status) from this value.
 		pid_t pid = command_exec(cmdlist, &pipefd);
+		
 		if (pid < 0)
 			abortClean();
 		if (pid != 0){
@@ -276,7 +277,8 @@ command_line_exec(command_t *cmdlist)
 						fprintf(stderr,"WAIT WRONG!\n");
 						return -1;
 					}
-					cmd_status = WEXITSTATUS(wp_status);
+					if (!WIFEXITED(wp_status))
+						cmd_status = WEXITSTATUS(wp_status);
 					break;
 				case CMD_AND:
 					if (waitpid(pid, &wp_status, 0) < 0){
@@ -284,7 +286,8 @@ command_line_exec(command_t *cmdlist)
 						return -1;
 					}
 					if (!WIFEXITED(wp_status) || WEXITSTATUS(wp_status) != 0) {
-						return WEXITSTATUS(wp_status);
+						cmd_status = WEXITSTATUS(wp_status);
+						goto done;
 					}
 					
 					break;
@@ -294,7 +297,8 @@ command_line_exec(command_t *cmdlist)
 						return -1;
 					}
 					if (!WIFEXITED(wp_status) || WEXITSTATUS(wp_status) == 0) {
-						return WEXITSTATUS(wp_status);
+						cmd_status = WEXITSTATUS(wp_status);
+						goto done;
 					}
 					break;
 				default:
