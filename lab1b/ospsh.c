@@ -24,7 +24,7 @@
 volatile bg_queue_t *bg_jobs = NULL; // List of background processes organized by job ID
 volatile int max_jobs = 0;           // The highest numbered job ID
 volatile int job_index = 1;          // We start from index 1, because there is no job 0
-volatile atomic int after_sig = 0;   // Used in exec_after child process. Parent should never touch this
+volatile sig_atomic_t after_sig = 0;   // Used in exec_after child process. Parent should never touch this
 
 //Signal Handlers for the 'after' command
 
@@ -65,7 +65,7 @@ bg_complete(int sig, siginfo_t *info, void *context)
         return;
     
     //Send a signal to each member on the queue
-    pid = bgq_next_id(bg_jobs[job_id]);
+    pid = bgq_next_id((bg_queue_t *) &(bg_jobs[job_id]));
     while (pid > 0)
     {
         kill(pid, SIGUSR2);
@@ -312,7 +312,7 @@ exec_after(command_t *cmd)
     if (job_id >= max_jobs || bg_jobs[job_id].pid == 0)
         run_now = 1;
     else {
-        bg_job = &(bg_jobs[job_id]);
+        bg_job = (bg_queue_t *) &bg_jobs[job_id];
         before_id = bg_job->pid;
     }
     
@@ -332,7 +332,7 @@ exec_after(command_t *cmd)
             cont_action.sa_handler = set_after_sig;
             sigemptyset (&cont_action.sa_mask);
             cont_action.sa_flags = 0;
-            sigaction(SIGUSR2, cont_action, NULL);
+            sigaction(SIGUSR2, &cont_action, NULL);
             
             //Unblock SIGUSR2
             sigprocmask(SIG_UNBLOCK,&cont_block,NULL);
@@ -379,7 +379,7 @@ int alloc_bg_jobs()
     }
     else //Allocate a new space twice the size of the old one
     {
-        bg_queue_t *old = bg_jobs;
+        bg_queue_t *old = (bg_queue_t *) bg_jobs;
         max_jobs = 2*max_jobs;
         bg_jobs = (bg_queue_t *) malloc(max_jobs*sizeof(bg_queue_t));
         if (!bg_jobs) {
@@ -388,7 +388,7 @@ int alloc_bg_jobs()
         }
             
         //Transfer old structs to new
-        memcpy(bg_jobs, old, i * sizeof(bg_queue_t));
+        memcpy((bg_queue_t *) bg_jobs, old, i * sizeof(bg_queue_t));
 
         free(old);
     }
@@ -406,10 +406,10 @@ int free_bg_jobs()
     int i = 1;
     while (i < max_jobs && i < job_index)
     {
-        bgq_clear(&bg_jobs[i]);
+        bgq_clear((bg_queue_t *) &bg_jobs[i]);
         i++;
     }
-    free(bg_jobs);
+    free((bg_queue_t *) bg_jobs);
     
     return 0;
 }
