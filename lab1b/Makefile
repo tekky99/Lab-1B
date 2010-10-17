@@ -12,7 +12,7 @@ ospsh: cmdline.o ospsh.o main-b.o bgproc.o
 	@echo + link $@
 	$(V)$(CC) $(CFLAGS) -lpthread -o $@ cmdline.o ospsh.o bgproc.o main-b.o
 
-ospsh.o: ospsh.c cmdline.h ospsh.h
+ospsh.o: ospsh.c cmdline.h ospsh.h bgproc.h
 	@echo + cc ospsh.c
 	$(V)$(CC) $(CFLAGS) -c ospsh.c
 
@@ -27,9 +27,9 @@ main-a.o: main-a.c cmdline.h
 main-b.o: main-b.c cmdline.h ospsh.h
 	@echo + cc main-b.c
 	$(V)$(CC) $(CFLAGS) -c main-b.c
-    
-bgproc.o: bgproc.c bgproc.h
-    @echo + cc bgproc.c
+
+bgproc.o: bgproc.c bgproc.h cmdline.h
+	@echo + cc bgproc.c
 	$(V)$(CC) $(CFLAGS) -c bgproc.c
 
 cmdline: cmdline.o main-a.o

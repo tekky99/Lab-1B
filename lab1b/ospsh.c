@@ -14,14 +14,66 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include "cmdline.h"
 #include "ospsh.h"
 #include "bgproc.h"
 
 /* Global variables */
 
-bg_job_t bg_jobs[MAXBGJOBS];//List of background processes organized by job ID
-size_t max_jobs = 0;        //The highest numbered job ID
+volatile bg_queue_t *bg_jobs = NULL; // List of background processes organized by job ID
+volatile int max_jobs = 0;           // The highest numbered job ID
+volatile int job_index = 1;          // We start from index 1, because there is no job 0
+volatile atomic int after_sig = 0;   // Used in exec_after child process. Parent should never touch this
+
+//Signal Handlers for the 'after' command
+
+/* Catches SIGUSR2
+ * Waiting process can now execute command.
+ */
+void
+set_after_sig(int sig)
+{
+    after_sig = 1;
+}
+
+/* Catches SIGUSR1. Background process has completed.
+ * Wake any waiting processes through SIGUSR2.
+ */
+void
+bg_complete(int sig, siginfo_t *info, void *context)
+{
+    pid_t pid;
+    int job_id;
+   
+    // Find pid of process that threw signal
+    if (info->si_code > 0)
+        return;
+    pid = info->si_pid;
+     
+    //Look up background process id in bg_jobs
+    job_id = 1;
+    while (job_id < job_index)
+    {
+        if (bg_jobs[job_id].pid == pid)
+            break;
+        job_id++;
+    }
+    
+    // Return if we did not find process in bg_jobs
+    if (job_id >= job_index)
+        return;
+    
+    //Send a signal to each member on the queue
+    pid = bgq_next_id(bg_jobs[job_id]);
+    while (pid > 0)
+    {
+        kill(pid, SIGUSR2);
+    }
+    
+    //Since the process is done, set pid to 0
+    bg_jobs[job_id].pid = 0;
+}
 
 /** 
  * Reports the creation of a background job in the following format:
@@ -198,44 +250,168 @@ done:
  * Executes the 'after' command stored in cmd
  *
  * Does some error checking first to make sure the parameters are correct.
- * Returns -1 if 
+ * Returns process id 0 if there was a syntax error.
+ * 
+ * If the first argument is a valid job id (> 0) then after will check
+ * if that background job it exists or is still running. If it is not
+ * running, after will immediately fork and have the child execute the
+ * given command
+ *
+ * If the job is still running, exec_after will fork the child, and the child
+ * will yield until it receives a signal from its parent. Once it does, it will
+ * execute the given command.
+ *
+ * The parent will add the child's process ID to the bg_queue_t bg_job struct
+ * and exit with the child process' ID. The code can handle the child
+ * appropriately back in command_exec and command_line_exec.
+ *
+ * When the background process specified in the job id finally exits, it will
+ * throw a signal to the parent. The parent will catch the signal and look up
+ * the appropriate job in bg_jobs. Each of the processes waiting on the queue
+ * will be signaled to wake up and execute.
  */
-int
+pid_t
 exec_after(command_t *cmd)
 {
     int job_id;
-    bg_job_t *bg_job;
+    int run_now = 0;    // whether specified command should run now
+    bg_queue_t *bg_job;
     pid_t before_id;
     pid_t after_id;
+    sigset_t bg_block;
+    
+    // Block any signals coming from child background processes
+    // The background processes will be signalling with SIGUSR1,
+    // so that's what we'll block. Also block SIGUSR2 so that our
+    // child process can set up first.
+    sigemptyset(&bg_block);
+    if (sigaddset(&bg_block, SIGUSR1 | SIGUSR2) == -1)
+        fprintf(stderr, "after: Invalid call to sigaddset()\n");
+    if (sigprocmask(SIG_BLOCK,&bg_block,NULL) == -1)
+        fprintf(stderr, "after: Invalid call to sigprocmask()\n");
 
-    if (!strcmp(cmd->argv[0], "after") || 
-        cmd->argv[1] == NULL || cmd->argv[2] == NULL)
+    //Error Checking
+    
+    //after program must contain at least one argument
+    if (!strcmp(cmd->argv[0], "after") || cmd->argv[1] == NULL)
     {
         goto error;
     }
     
-    job_id = (int) cmd->argv[1];
-    if (job_id < 0 || job_id >= max_jobs || !(bg_jobs[job_id])) 
+    job_id = atoi(cmd->argv[1]);
+    
+    // If job number is negative or 0, there was a syntax error
+    //
+    // There is no job number 0, and atoi returns 0 if it fails
+    if (job_id <= 0) 
     {
         goto error;
     }
     
-    bg_job = bg_jobs[job_id];
-    before_id = bg_job->pid;
+    //If job number doesn't exist or has already completed, run command immediately
+    if (job_id >= max_jobs || bg_jobs[job_id].pid == 0)
+        run_now = 1;
+    else {
+        bg_job = &(bg_jobs[job_id]);
+        before_id = bg_job->pid;
+    }
     
     after_id = fork();
     
     if (after_id == 0)
     {
+        sigset_t cont_block;
+        sigset_t old_set;
+        sigemptyset(&cont_block);
+        sigaddset(&cont_block, SIGUSR2);
+        
+        if (!run_now)
+        {
+            //Set signal handler
+            struct sigaction cont_action;
+            cont_action.sa_handler = set_after_sig;
+            sigemptyset (&cont_action.sa_mask);
+            cont_action.sa_flags = 0;
+            sigaction(SIGUSR2, cont_action, NULL);
+            
+            //Unblock SIGUSR2
+            sigprocmask(SIG_UNBLOCK,&cont_block,NULL);
+            
+            //Suspend until signal has been received
+            sigprocmask(SIG_BLOCK,&cont_block,&old_set);
+            while (!after_sig)
+                sigsuspend(&old_set);
+        }
+        
+        //Execute command and return the value (execvp shouldn't return!)
+        exit(execvp(cmd->argv[2], &(cmd->argv[2])));
     }
     
     //Still in parent if we reach here
+    //Push waiting process onto queue
+    if (!run_now)
+        bgq_push(bg_job, after_id);
     
+    //Unblock signals from background processes
+    if (sigprocmask(SIG_UNBLOCK,&bg_block,NULL) == -1)
+        fprintf(stderr, "after: Invalid call to sigprocmask()\n");
+        
+    return after_id;
     
 error:
-    //Output an error to stderr and return -1
+    //Output an error to stderr and return 0
     fprintf(stderr, "after: Syntax error\n");
-    return -1;
+    return 0;
+}
+
+/* Allocates more memory for bg_jobs */
+int alloc_bg_jobs()
+{
+    int i = job_index;
+    
+    //Initialize bg_jobs the first time
+    if (!bg_jobs)
+    {
+        max_jobs = I_BGJOBS;
+        bg_jobs = (bg_queue_t *) malloc(max_jobs*sizeof(bg_queue_t));
+        if (!bg_jobs)
+            goto error;
+    }
+    else //Allocate a new space twice the size of the old one
+    {
+        bg_queue_t *old = bg_jobs;
+        max_jobs = 2*max_jobs;
+        bg_jobs = (bg_queue_t *) malloc(max_jobs*sizeof(bg_queue_t));
+        if (!bg_jobs) {
+            bg_jobs = old;
+            goto error;
+        }
+            
+        //Transfer old structs to new
+        memcpy(bg_jobs, old, i * sizeof(bg_queue_t));
+
+        free(old);
+    }
+    
+    return 0;
+    
+    error:
+        fprintf(stderr, "IO Error: Too many background processes!\n");
+        return -1;
+}
+
+/* Frees all memory in bg_jobs */
+int free_bg_jobs()
+{
+    int i = 1;
+    while (i < max_jobs && i < job_index)
+    {
+        bgq_clear(&bg_jobs[i]);
+        i++;
+    }
+    free(bg_jobs);
+    
+    return 0;
 }
 
 void report_background_job(int job_id, int process_id) {

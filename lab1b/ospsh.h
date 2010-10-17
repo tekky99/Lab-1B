@@ -9,6 +9,7 @@
  */
 
 #include "cmdline.h"
+#include "bgproc.h"
 
 /* Execute the command list. */
 int command_line_exec(command_t *);
