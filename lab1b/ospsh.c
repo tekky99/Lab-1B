@@ -24,7 +24,8 @@
 volatile bg_queue_t *bg_jobs = NULL; // List of background processes organized by job ID
 volatile int max_jobs = 0;           // The highest numbered job ID
 volatile int job_index = 1;          // We start from index 1, because there is no job 0
-volatile sig_atomic_t after_sig = 0;   // Used in exec_after child process. Parent should never touch this
+volatile sig_atomic_t after_sig = 0; // Used in exec_after child process. Parent should never touch this
+int top_level = 1;                   // Keeps track of if we're on top level shell
 
 //Signal Handlers for the 'after' command
 
@@ -69,6 +70,7 @@ bg_complete(int sig, siginfo_t *info, void *context)
     while (pid > 0)
     {
         kill(pid, SIGUSR2);
+        pid = bgq_next_id((bg_queue_t *) &(bg_jobs[job_id]));
     }
     
     //Since the process is done, set pid to 0
@@ -81,6 +83,56 @@ bg_complete(int sig, siginfo_t *info, void *context)
  * to stderr.
  */
 void report_background_job(int job_id, int process_id);
+
+void set_redirects(command_t *cmd, int *pass_pipefd, int *pipefd)
+{
+	int fd;
+    
+    if (*pass_pipefd != STDIN_FILENO) {
+				dup2(*pass_pipefd,STDIN_FILENO);
+				close(*pass_pipefd);
+        }
+			
+		if (cmd->controlop == CMD_PIPE) {
+			if (pipefd[1] != STDOUT_FILENO) {
+				dup2(pipefd[1],STDOUT_FILENO);
+				close(pipefd[1]);
+			}
+			close(pipefd[0]);
+		}
+
+		// Check for Redirection and set it up
+		if (cmd->redirect_filename[0]){
+			fd = open(cmd->redirect_filename[0], O_RDONLY);
+			if (fd < 0){
+				fprintf(stderr,"OPEN WRONG!\n");
+				abort();
+			}
+			dup2(fd,STDIN_FILENO);
+			close(fd);
+		}
+		if (cmd->redirect_filename[1]){
+			fd = open(cmd->redirect_filename[1], O_WRONLY|O_CREAT|O_TRUNC, 0666);
+			if (fd < 0){
+				fprintf(stderr,"OPEN WRONG!\n");
+				abort();
+			}
+			dup2(fd,STDOUT_FILENO);
+			close(fd);
+		}
+		if (cmd->redirect_filename[2]){
+			fd = open(cmd->redirect_filename[2], O_WRONLY|O_CREAT|O_TRUNC, 0666);
+			if (fd < 0){
+				fprintf(stderr,"OPEN WRONG!\n");
+				abort();
+			}
+			dup2(fd,STDERR_FILENO);
+			close(fd);
+		}
+}
+
+int alloc_bg_jobs();
+pid_t exec_after(command_t *cmd, int *pass_pipefd, int *pipefd);
 
 /* command_exec(cmd, pass_pipefd)
  *
@@ -143,60 +195,57 @@ command_exec(command_t *cmd, int *pass_pipefd)
 		exit(0);
 	}
 	
-	pid = fork();
-	int fd;
+	if (cmd->argv[0] && !strcmp(cmd->argv[0],"after") && top_level){
+		pid = exec_after(cmd, pass_pipefd, pipefd);
+	}
+    else 
+        pid = fork();
 	
 	if (pid < 0){
 		fprintf(stderr,"FORK WRONG!\n");
 		return -1;
 	} else if (pid == 0){
 	
+        // Check if this is a background process
+        if (cmd->controlop == CMD_BACKGROUND) {
+            
+            // Fork again, since we need someone to notify the parent
+            // when this background process completes
+            pid = fork();
+            
+            // Do the following if we are parent.
+            // If we are child, ignore all this and proceed as normal
+            if (pid != 0) {
+                int wp_status;
+                
+                if (waitpid(pid, &wp_status, 0) < 0) {
+                    fprintf(stderr,"BACKGROUND WAIT WRONG!\n");
+                    exit(1);
+                }
+                
+                //Background process has finished running.
+                //Signal the parent and then exit with same status
+                kill(getppid(), SIGUSR1);
+                
+            
+                if (WIFEXITED(wp_status))
+                    exit(WEXITSTATUS(wp_status));
+                exit(1);
+            }
+        }
 	
-		if (*pass_pipefd != STDIN_FILENO) {
-				dup2(*pass_pipefd,STDIN_FILENO);
-				close(*pass_pipefd);
-			}
-			
-		if (cmd->controlop == CMD_PIPE) {
-			if (pipefd[1] != STDOUT_FILENO) {
-				dup2(pipefd[1],STDOUT_FILENO);
-				close(pipefd[1]);
-			}
-			close(pipefd[0]);
-		}
-
-		// Check for Redirection and set it up
-		if (cmd->redirect_filename[0]){
-			fd = open(cmd->redirect_filename[0], O_RDONLY);
-			if (fd < 0){
-				fprintf(stderr,"OPEN WRONG!\n");
-				abortClean();
-			}
-			dup2(fd,STDIN_FILENO);
-			close(fd);
-		}
-		if (cmd->redirect_filename[1]){
-			fd = open(cmd->redirect_filename[1], O_WRONLY|O_CREAT, 0666);
-			if (fd < 0){
-				fprintf(stderr,"OPEN WRONG!\n");
-				abortClean();
-			}
-			dup2(fd,STDOUT_FILENO);
-			close(fd);
-		}
-		if (cmd->redirect_filename[2]){
-			fd = open(cmd->redirect_filename[2], O_WRONLY|O_CREAT, 0666);
-			if (fd < 0){
-				fprintf(stderr,"OPEN WRONG!\n");
-				abortClean();
-			}
-			dup2(fd,STDERR_FILENO);
-			close(fd);
-		}
+        // File redirections
+		set_redirects(cmd, pass_pipefd, pipefd);
 		
 		// Parenthesis special case
 		if (cmd->subshell){
-			exit(command_line_exec(cmd->subshell));
+            int exit_status;
+            int is_top = top_level;
+            
+            top_level = 0;
+			exit_status = command_line_exec(cmd->subshell);
+            top_level = 1;
+            exit(exit_status);
 		}
 		if (!(cmd->argv[0]) && !(cmd->subshell))
 			exit(0);
@@ -216,13 +265,12 @@ command_exec(command_t *cmd, int *pass_pipefd)
 			
 		if (execvp(cmd->argv[0], cmd->argv) < 0){
 			fprintf(stderr,"PROGRAM WRONG!\n");
-			abortClean();
+			abort();
 		}
 	}
 	
 	
 	if (cmd->controlop == CMD_PIPE) {
-		//*pass_pipefd = pipefd[0];  //pass read end of pipe to parent
 		dup2(pipefd[0], *pass_pipefd);
 		if (pipefd[0] != STDIN_FILENO) {
 			close(pipefd[0]);
@@ -337,7 +385,16 @@ command_line_exec(command_t *cmdlist)
 {
 	int cmd_status = 0;	    // status of last command executed
 	int pipefd = STDIN_FILENO;  // read end of last pipe
-	
+    
+    //Set handler for detecting exited child processes
+    if (top_level) {
+        struct sigaction bg_action;
+        bg_action.sa_sigaction = bg_complete;
+        sigemptyset (&bg_action.sa_mask);
+        bg_action.sa_flags = SA_SIGINFO|SA_RESTART;
+        sigaction(SIGUSR1, &bg_action, NULL);
+    }
+    
 	while (cmdlist) {
 		int wp_status;      // Hint: use for waitpid's status argument!
                             // Read the manual page for waitpid() to
@@ -346,13 +403,13 @@ command_line_exec(command_t *cmdlist)
 		pid_t pid = command_exec(cmdlist, &pipefd);
 		
 		if (pid < 0)
-			abortClean();
+			abort();
 		if (pid != 0){
 			switch(cmdlist->controlop){
 				case CMD_END:
 				case CMD_SEMICOLON:
 					if (waitpid(pid, &wp_status, 0) < 0){
-						fprintf(stderr,"WAIT WRONG!\n");
+						fprintf(stderr,"SEMICOLON WAIT WRONG!\n");
 						return -1;
 					}
 					if (WIFEXITED(wp_status))
@@ -360,7 +417,7 @@ command_line_exec(command_t *cmdlist)
 					break;
 				case CMD_AND:
 					if (waitpid(pid, &wp_status, 0) < 0){
-						fprintf(stderr,"WAIT WRONG!\n");
+						fprintf(stderr,"AND WAIT WRONG!\n");
 						return -1;
 					}
 					if (!WIFEXITED(wp_status) || WEXITSTATUS(wp_status) != 0) {
@@ -371,7 +428,7 @@ command_line_exec(command_t *cmdlist)
 					break;
 				case CMD_OR:
 					if (waitpid(pid, &wp_status, 0) < 0){
-						fprintf(stderr,"WAIT WRONG!\n");
+						fprintf(stderr,"OR WAIT WRONG!\n");
 						return -1;
 					}
 					if (!WIFEXITED(wp_status) || WEXITSTATUS(wp_status) == 0) {
@@ -379,6 +436,31 @@ command_line_exec(command_t *cmdlist)
 						goto done;
 					}
 					break;
+                case CMD_BACKGROUND:
+                    if (top_level) {
+                        int i = 1;
+                        
+                        //Allocate more space if we are out
+                        if (job_index >= max_jobs) {
+                            if (alloc_bg_jobs() != 0)
+                                abort();
+                        }
+                        
+                        //Cycle through bg_jobs until we find an empty one
+                        while (i < job_index) {
+                            if (bg_jobs[i].pid == 0)
+                                break;
+                            i++;
+                        }
+                                
+                        //If we couldn't find an empty one, increment job_index
+                        if (i == job_index)
+                            job_index++;
+                            
+                        //Initialize the new job
+                        bgq_init((bg_queue_t *) &bg_jobs[i], pid);
+                        report_background_job(i, pid);
+                    }
 				default:
 					cmd_status = 0;
 			}
@@ -421,7 +503,7 @@ done:
  * will be signaled to wake up and execute.
  */
 pid_t
-exec_after(command_t *cmd)
+exec_after(command_t *cmd, int *pass_pipefd, int *pipefd)
 {
     int job_id;
     int run_now = 0;    // whether specified command should run now
@@ -442,24 +524,25 @@ exec_after(command_t *cmd)
 
     //Error Checking
     
+    
     //after program must contain at least one argument
-    if (!strcmp(cmd->argv[0], "after") || cmd->argv[1] == NULL)
+    if (strcmp(cmd->argv[0], "after") || cmd->argv[1] == NULL) 
     {
-        goto error;
+        //Don't run at all. Exit with error
+        run_now = -1;
     }
-    
-    job_id = atoi(cmd->argv[1]);
-    
-    // If job number is negative or 0, there was a syntax error
-    //
-    // There is no job number 0, and atoi returns 0 if it fails
-    if (job_id <= 0) 
-    {
-        goto error;
+    else {
+        job_id = atoi(cmd->argv[1]);
+        if (job_id <= 0)
+            run_now = -1;
     }
     
     //If job number doesn't exist or has already completed, run command immediately
-    if (job_id >= max_jobs || bg_jobs[job_id].pid == 0)
+    if (run_now == -1)
+    {
+        //Do nothing
+    }
+    else if (job_id >= max_jobs || bg_jobs[job_id].pid == 0)
         run_now = 1;
     else {
         bg_job = (bg_queue_t *) &bg_jobs[job_id];
@@ -474,6 +557,14 @@ exec_after(command_t *cmd)
         sigset_t old_set;
         sigemptyset(&cont_block);
         sigaddset(&cont_block, SIGUSR2);
+        
+        set_redirects(cmd, pass_pipefd, pipefd);
+        
+        if (run_now == -1) {
+            //Output an error to stderr and return 0
+            fprintf(stderr, "after: Syntax error\n");
+            exit(1);
+        }
         
         if (!run_now)
         {
@@ -507,11 +598,6 @@ exec_after(command_t *cmd)
         fprintf(stderr, "after: Invalid call to sigprocmask()\n");
         
     return after_id;
-    
-error:
-    //Output an error to stderr and return 0
-    fprintf(stderr, "after: Syntax error\n");
-    return 0;
 }
 
 /* Allocates more memory for bg_jobs */
