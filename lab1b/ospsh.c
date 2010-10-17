@@ -79,7 +79,7 @@ command_exec(command_t *cmd, int *pass_pipefd)
 		/* Your code here. */
 		if (pipe(pipefd) < 0)
 			return -1;
-		*pass_pipefd = pipefd[0];
+		
 	}
 	
 	if (cmd->argv[0] && !strcmp(cmd->argv[0],"exit")){
@@ -95,6 +95,20 @@ command_exec(command_t *cmd, int *pass_pipefd)
 		fprintf(stderr,"FORK WRONG!\n");
 		return -1;
 	} else if (pid == 0){
+	
+	
+		if (*pass_pipefd != STDIN_FILENO) {
+				dup2(*pass_pipefd,STDIN_FILENO);
+				close(*pass_pipefd);
+			}
+			
+		if (cmd->controlop == CMD_PIPE) {
+			if (pipefd[1] != STDOUT_FILENO) {
+				dup2(pipefd[1],STDOUT_FILENO);
+				close(pipefd[1]);
+			}
+			close(pipefd[0]);
+		}
 
 		// Check for Redirection and set it up
 		if (cmd->redirect_filename[0]){
@@ -103,44 +117,41 @@ command_exec(command_t *cmd, int *pass_pipefd)
 				fprintf(stderr,"OPEN WRONG!\n");
 				abortClean();
 			}
-			dup2(fd,0);
+			dup2(fd,STDIN_FILENO);
 			close(fd);
 		}
 		if (cmd->redirect_filename[1]){
-			fd = open(cmd->redirect_filename[1], O_WRONLY|O_CREAT);
+			fd = open(cmd->redirect_filename[1], O_WRONLY|O_CREAT, 0666);
 			if (fd < 0){
 				fprintf(stderr,"OPEN WRONG!\n");
 				abortClean();
 			}
-			dup2(fd,1);
+			dup2(fd,STDOUT_FILENO);
 			close(fd);
 		}
 		if (cmd->redirect_filename[2]){
-			fd = open(cmd->redirect_filename[2], O_WRONLY|O_CREAT);
+			fd = open(cmd->redirect_filename[2], O_WRONLY|O_CREAT, 0666);
 			if (fd < 0){
 				fprintf(stderr,"OPEN WRONG!\n");
 				abortClean();
 			}
-			dup2(fd,2);
+			dup2(fd,STDERR_FILENO);
 			close(fd);
 		}
 		
 		// Parenthesis special case
 		if (cmd->subshell){
-			if (command_line_exec(cmd->subshell) < 0){
-				fprintf(stderr, "SUBSHELL WRONG!\n");
-				return -1;
-			}
+			exit(command_line_exec(cmd->subshell));
 		}
 		if (!(cmd->argv[0]) && !(cmd->subshell))
-			_exit(0);
+			exit(0);
 		
 		if (!strcmp(cmd->argv[0],"cd")){
 			char *path;
 			if (cmd->argv[1])
 				path = cmd->argv[1];
 			else
-				path = "~";
+				path = getenv("HOME");
 			
 			if (chdir(path)<0){
 				exit(1);
@@ -154,20 +165,30 @@ command_exec(command_t *cmd, int *pass_pipefd)
 		}
 	}
 	
-	if (!(cmd->argv[0]) && !(cmd->subshell))
-			exit(0);
-		
-		if (!strcmp(cmd->argv[0],"cd")){
-			char *path;
-			if (cmd->argv[1])
-				path = cmd->argv[1];
-			else
-				path = "~";
-			
-			if (chdir(path)<0){
-				fprintf(stderr, "Invalid File Path\n");
-			}
+	
+	if (cmd->controlop == CMD_PIPE) {
+		//*pass_pipefd = pipefd[0];  //pass read end of pipe to parent
+		dup2(pipefd[0], *pass_pipefd);
+		if (pipefd[0] != STDIN_FILENO) {
+			close(pipefd[0]);
 		}
+		close(pipefd[1]);
+	}
+	else {
+		dup2 (STDIN_FILENO, *pass_pipefd);
+	}
+		
+	if (cmd->argv[0] && !strcmp(cmd->argv[0],"cd")){
+		char *path;
+		if (cmd->argv[1])
+			path = cmd->argv[1];
+		else
+			path = getenv("HOME");
+		
+		if (chdir(path)<0){
+			fprintf(stderr, "Invalid File Path\n");
+		}
+	}
 	//fprintf(stderr,"Child is done\n");
 	// Fork the child and execute the command in that child.
 	// You will handle all redirections by manipulating file descriptors.
@@ -277,7 +298,7 @@ command_line_exec(command_t *cmdlist)
 						fprintf(stderr,"WAIT WRONG!\n");
 						return -1;
 					}
-					if (!WIFEXITED(wp_status))
+					if (WIFEXITED(wp_status))
 						cmd_status = WEXITSTATUS(wp_status);
 					break;
 				case CMD_AND:
