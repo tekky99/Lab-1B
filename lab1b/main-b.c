@@ -61,6 +61,11 @@ main(int argc, char *argv[])
 				perror("cs111_fall07");
 			break;
 		}
+		
+		// Destroy any persisting zombies and memory allocation
+		// Get PIDS of zombies
+		// Wait on all of them
+		// cleanValues
 
 		// build the command list
 		parse_init(&parsestate, input);
@@ -86,3 +91,4 @@ main(int argc, char *argv[])
 
 	return 0;
 }
+

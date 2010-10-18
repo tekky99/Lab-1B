@@ -10,8 +10,8 @@
  
 struct zombie_list{
 	pid_t *z_list;
-	int z_size = 0;
-	int MAX_Z_SIZE = 10;
+	int z_size;
+	int MAX_Z_SIZE;
 };
 
 
