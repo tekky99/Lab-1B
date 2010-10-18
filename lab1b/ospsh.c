@@ -84,6 +84,8 @@ bg_complete(int sig, siginfo_t *info, void *context)
  */
 void report_background_job(int job_id, int process_id);
 
+void cleanValues();
+
 void set_redirects(command_t *cmd, int *pass_pipefd, int *pipefd)
 {
 	int fd;
@@ -474,6 +476,8 @@ command_line_exec(command_t *cmdlist)
 	}
 
 done:
+	if (top_level)
+		cleanValues();
 	return cmd_status;
 }
 
@@ -652,4 +656,7 @@ int free_bg_jobs()
 
 void report_background_job(int job_id, int process_id) {
     fprintf(stderr, "[%d] %d\n", job_id, process_id);
+}
+
+void cleanValues(){
 }
