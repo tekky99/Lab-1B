@@ -665,6 +665,10 @@ int free_bg_jobs()
     }
     free((bg_queue_t *) bg_jobs);
     
+    bg_jobs = NULL;
+    max_jobs = 0;
+    job_index = 1;
+    
     return 0;
 }
 
