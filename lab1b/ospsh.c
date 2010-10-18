@@ -25,7 +25,7 @@ volatile bg_queue_t *bg_jobs = NULL; // List of background processes organized b
 volatile int max_jobs = 0;           // The highest numbered job ID
 volatile int job_index = 1;          // We start from index 1, because there is no job 0
 volatile sig_atomic_t after_sig = 0; // Used in exec_after child process. Parent should never touch this
-int top_level = 1;                   // Keeps track of if we're on top level shell
+volatile int top_level = 1;                   // Keeps track of if we're on top level shell
 
 //Signal Handlers for the 'after' command
 
@@ -131,6 +131,33 @@ void set_redirects(command_t *cmd, int *pass_pipefd, int *pipefd)
 		}
 }
 
+void create_bg_listener(void)
+{
+    // Fork again, since we need someone to notify the parent
+    // when this background process completes
+    pid_t pid = fork();
+    
+    // If we are child, exit the function and continue as normal
+    // Do the following if we are parent.
+    if (pid != 0) {
+        int wp_status;
+        
+        if (waitpid(pid, &wp_status, 0) < 0) {
+            fprintf(stderr,"BACKGROUND WAIT WRONG!\n");
+            exit(1);
+        }
+        
+        //Background process has finished running.
+        //Signal the parent and then exit with same status
+        kill(getppid(), SIGUSR1);
+        
+    
+        if (WIFEXITED(wp_status))
+            exit(WEXITSTATUS(wp_status));
+        exit(1);
+    }
+}
+
 int alloc_bg_jobs();
 pid_t exec_after(command_t *cmd, int *pass_pipefd, int *pipefd);
 
@@ -208,30 +235,7 @@ command_exec(command_t *cmd, int *pass_pipefd)
 	
         // Check if this is a background process
         if (cmd->controlop == CMD_BACKGROUND) {
-            
-            // Fork again, since we need someone to notify the parent
-            // when this background process completes
-            pid = fork();
-            
-            // Do the following if we are parent.
-            // If we are child, ignore all this and proceed as normal
-            if (pid != 0) {
-                int wp_status;
-                
-                if (waitpid(pid, &wp_status, 0) < 0) {
-                    fprintf(stderr,"BACKGROUND WAIT WRONG!\n");
-                    exit(1);
-                }
-                
-                //Background process has finished running.
-                //Signal the parent and then exit with same status
-                kill(getppid(), SIGUSR1);
-                
-            
-                if (WIFEXITED(wp_status))
-                    exit(WEXITSTATUS(wp_status));
-                exit(1);
-            }
+            create_bg_listener();
         }
 	
         // File redirections
@@ -586,8 +590,18 @@ exec_after(command_t *cmd, int *pass_pipefd, int *pipefd)
                 sigsuspend(&old_set);
         }
         
-        //Execute command and return the value (execvp shouldn't return!)
-        exit(execvp(cmd->argv[2], &(cmd->argv[2])));
+        // Check if this is a background process
+        if (cmd->controlop == CMD_BACKGROUND) {
+            create_bg_listener();
+        }
+        
+        if (cmd->argv[2]) {
+            //Execute command and return the value (execvp shouldn't return!)
+            exit(execvp(cmd->argv[2], &(cmd->argv[2])));
+        }
+        else {
+            exit(0);
+        }
     }
     
     //Still in parent if we reach here
