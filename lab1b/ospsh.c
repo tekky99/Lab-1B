@@ -84,8 +84,6 @@ bg_complete(int sig, siginfo_t *info, void *context)
  */
 void report_background_job(int job_id, int process_id);
 
-void cleanValues();
-
 void set_redirects(command_t *cmd, int *pass_pipefd, int *pipefd)
 {
 	int fd;
@@ -658,5 +656,5 @@ void report_background_job(int job_id, int process_id) {
     fprintf(stderr, "[%d] %d\n", job_id, process_id);
 }
 
-void cleanValues(){
+void cleanValue(){
 }
