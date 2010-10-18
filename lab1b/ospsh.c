@@ -26,6 +26,7 @@ volatile int max_jobs = 0;           // The highest numbered job ID
 volatile int job_index = 1;          // We start from index 1, because there is no job 0
 volatile sig_atomic_t after_sig = 0; // Used in exec_after child process. Parent should never touch this
 volatile int top_level = 1;                   // Keeps track of if we're on top level shell
+volatile struct zombie_list zomList;
 
 //Signal Handlers for the 'after' command
 
@@ -38,19 +39,82 @@ set_after_sig(int sig)
     after_sig = 1;
 }
 
-/* Catches SIGUSR1. Background process has completed.
+int create_zombie_list(){
+	zomList.MAX_Z_SIZE = 10;
+	zomList.z_size = 0;
+	zomList.z_list = (pid_t *) malloc(zomList.MAX_Z_SIZE * sizeof(pid_t));
+	if (!zomList.z_list) {
+		fprintf(stderr, "MEMORY ALLOCATION WRONG!\n");
+		return -1;
+	}
+	return 0;
+
+}
+
+int double_zombie_list(){
+	pid_t *old = zomList.z_list;
+	zomList.MAX_Z_SIZE = 2*zomList.MAX_Z_SIZE;
+	zomList.z_list = (pid_t *) malloc(zomList.MAX_Z_SIZE*sizeof(pid_t));
+	if (!zomList.z_list) {
+		zomList.z_list = old;
+		fprintf(stderr, "MEMORY ALLOCATION WRONG!\n");
+		return -1;
+	}
+	//Transfer old structs to new
+	memcpy((pid_t*) zomList.z_list, old, zomList.z_size * sizeof(bg_queue_t));
+	free(old);
+	return 0;
+}
+
+/* Catches SIGUSR2. Background process has completed.
  * Wake any waiting processes through SIGUSR2.
  */
 void
-bg_complete(int sig, siginfo_t *info, void *context)
+pipe_complete(int sig, siginfo_t *info, void *context)
 {
     pid_t pid;
-    int job_id;
+    int status;
+	
    
     // Find pid of process that threw signal
     if (info->si_code > 0)
         return;
     pid = info->si_pid;
+     
+    // Add pipe pid to zombie kills
+	if (!zomList.z_list)
+		status = create_zombie_list();
+	if (zomList.z_size == zomList.MAX_Z_SIZE)
+		status = double_zombie_list();
+	
+	if (status == 0){
+		zomList.z_list[zomList.z_size] = pid;
+		zomList.z_size++;
+	}
+}
+ 
+void
+bg_complete(int sig, siginfo_t *info, void *context)
+{
+    pid_t pid;
+    int job_id;
+	int status;
+   
+    // Find pid of process that threw signal
+    if (info->si_code > 0)
+        return;
+    pid = info->si_pid;
+	
+	// Add background pid to zombie kills
+	if (!zomList.z_list)
+		status = create_zombie_list();
+	if (zomList.z_size == zomList.MAX_Z_SIZE)
+		status = double_zombie_list();
+	
+	if (status == 0){
+		zomList.z_list[zomList.z_size] = pid;
+		zomList.z_size++;
+	}
      
     //Look up background process id in bg_jobs
     job_id = 1;
@@ -83,7 +147,6 @@ bg_complete(int sig, siginfo_t *info, void *context)
  * to stderr.
  */
 void report_background_job(int job_id, int process_id);
-
 void cleanValues();
 
 void set_redirects(command_t *cmd, int *pass_pipefd, int *pipefd)
@@ -133,7 +196,7 @@ void set_redirects(command_t *cmd, int *pass_pipefd, int *pipefd)
 		}
 }
 
-void create_bg_listener(void)
+void create_bg_listener(command_t *cmd)
 {
     // Fork again, since we need someone to notify the parent
     // when this background process completes
@@ -145,13 +208,16 @@ void create_bg_listener(void)
         int wp_status;
         
         if (waitpid(pid, &wp_status, 0) < 0) {
-            fprintf(stderr,"BACKGROUND WAIT WRONG!\n");
+            fprintf(stderr,"GRANDCHILD WAIT WRONG!\n");
             exit(1);
         }
         
         //Background process has finished running.
         //Signal the parent and then exit with same status
-        kill(getppid(), SIGUSR1);
+		if (cmd->controlop == CMD_BACKGROUND)
+			kill(getppid(), SIGUSR1);
+		else
+			kill(getppid(), SIGUSR2);
         
     
         if (WIFEXITED(wp_status))
@@ -236,8 +302,8 @@ command_exec(command_t *cmd, int *pass_pipefd)
 	} else if (pid == 0){
 	
         // Check if this is a background process
-        if (cmd->controlop == CMD_BACKGROUND) {
-            create_bg_listener();
+        if (cmd->controlop == CMD_BACKGROUND || cmd->controlop == CMD_PIPE) {
+            create_bg_listener(cmd);
         }
 	
         // File redirections
@@ -399,6 +465,12 @@ command_line_exec(command_t *cmdlist)
         sigemptyset (&bg_action.sa_mask);
         bg_action.sa_flags = SA_SIGINFO|SA_RESTART;
         sigaction(SIGUSR1, &bg_action, NULL);
+		
+		struct sigaction pipe_action;
+        pipe_action.sa_sigaction = pipe_complete;
+        sigemptyset (&pipe_action.sa_mask);
+        pipe_action.sa_flags = SA_SIGINFO|SA_RESTART;
+        sigaction(SIGUSR2, &pipe_action, NULL);
     }
     
 	while (cmdlist) {
@@ -594,7 +666,7 @@ exec_after(command_t *cmd, int *pass_pipefd, int *pipefd)
         
         // Check if this is a background process
         if (cmd->controlop == CMD_BACKGROUND) {
-            create_bg_listener();
+            create_bg_listener(cmd);
         }
         
         if (cmd->argv[2]) {
@@ -677,4 +749,21 @@ void report_background_job(int job_id, int process_id) {
 }
 
 void cleanValues(){
+	sigset_t cont_block;
+	sigemptyset(&cont_block);
+	sigaddset(&cont_block, SIGUSR2 | SIGUSR1);
+	
+	sigprocmask(SIG_BLOCK,&cont_block,NULL);
+	
+	int status;
+	int p;
+	for (p = 0; p < zomList.z_size; p++){
+		if (waitpid(zomList.z_list[p], &status, 0) < 0){
+			fprintf(stderr,"ZOMBIE WAIT WRONG!\n");
+		}
+	}
+	free(zomList.z_list);
+	zomList.z_list = NULL;
+	
+	sigprocmask(SIG_UNBLOCK,&cont_block,NULL);
 }
